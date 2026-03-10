@@ -15,6 +15,11 @@
  * Table/food protection: The patterned tablecloth has high saturation (blue patterns)
  * and food is colorful → neither triggers neutral background detection.
  * Table is also close to camera → depth keeps it.
+ *
+ * Mobile optimization:
+ * - Models run sequentially and are DISPOSED after use
+ * - Only one AI model in memory at a time (prevents OOM on mobile)
+ * - Model files are cached in browser Cache API → fast reload from cache
  */
 import { pipeline, RawImage, env } from '@huggingface/transformers'
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
@@ -56,80 +61,90 @@ const imglyConfig: Config = {
   progress: () => {},
 }
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-let depthEstimator: any = null
-let imglyPreloaded = false
+// Cached device detection result
+let detectedDevice: 'webgpu' | 'wasm' | null = null
 
 /**
  * Detect available device for depth estimation model.
  * Attempts WebGPU with actual adapter check, falls back to WASM.
  * On mobile, WebGPU adapter usually fails → safe WASM fallback.
+ * Result is cached after first detection.
  */
 async function detectDevice(): Promise<'webgpu' | 'wasm'> {
+  if (detectedDevice) return detectedDevice
   try {
     if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
       const adapter = await (navigator as any).gpu.requestAdapter()
       if (adapter) {
+        detectedDevice = 'webgpu'
         return 'webgpu'
       }
     }
   } catch {
     // WebGPU not available or adapter request failed
   }
+  detectedDevice = 'wasm'
   return 'wasm'
 }
 
 /**
- * Preload both models sequentially to minimize peak memory on mobile.
+ * Create a depth estimation pipeline with WebGPU → WASM fallback.
+ * The pipeline is NOT kept in memory — caller is responsible for disposal.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+async function createDepthPipeline(onProgress?: (progress: { status: string; progress?: number }) => void): Promise<any> {
+  const device = await detectDevice()
+  try {
+    return await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+      dtype: DEPTH_MODEL_DTYPE,
+      device,
+      ...(onProgress ? { progress_callback: onProgress } : {}),
+    })
+  } catch {
+    if (device === 'webgpu') {
+      console.warn('WebGPU pipeline failed, falling back to WASM')
+      detectedDevice = 'wasm' // Cache the fallback result
+      return await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+        dtype: DEPTH_MODEL_DTYPE,
+        device: 'wasm',
+        ...(onProgress ? { progress_callback: onProgress } : {}),
+      })
+    }
+    throw new Error('Failed to load depth estimation model')
+  }
+}
+
+/**
+ * Preload model files to browser cache (download only).
+ * Models are NOT kept in memory — they are loaded on demand in removeBg
+ * and disposed after use to minimize mobile memory pressure.
  */
 export async function preloadModels(
   onProgress?: (percent: number) => void
 ): Promise<void> {
   try {
-    // Preload depth estimation model first
-    if (!depthEstimator) {
-      const device = await detectDevice()
-      try {
-        depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
-          dtype: DEPTH_MODEL_DTYPE,
-          device,
-          progress_callback: (progress: { status: string; progress?: number }) => {
-            if (onProgress && progress.progress != null) {
-              onProgress(Math.round(progress.progress * 0.5)) // 0-50%
-            }
-          },
-        })
-      } catch {
-        // WebGPU pipeline failed → retry with WASM
-        if (device === 'webgpu') {
-          console.warn('WebGPU pipeline failed, falling back to WASM')
-          depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
-            dtype: DEPTH_MODEL_DTYPE,
-            device: 'wasm',
-            progress_callback: (progress: { status: string; progress?: number }) => {
-              if (onProgress && progress.progress != null) {
-                onProgress(Math.round(progress.progress * 0.5)) // 0-50%
-              }
-            },
-          })
-        }
+    // Phase 1: Download depth model to cache (0-50%)
+    const depthPipeline = await createDepthPipeline((progress) => {
+      if (onProgress && progress.progress != null) {
+        onProgress(Math.round(progress.progress * 0.5)) // 0-50%
       }
+    })
+    // Immediately dispose to free memory — model files stay in browser cache
+    if (depthPipeline.dispose) {
+      await depthPipeline.dispose()
     }
 
-    // Then preload person segmentation model
-    if (!imglyPreloaded) {
-      await preload({
-        ...imglyConfig,
-        progress: (_key: string, current: number, total: number) => {
-          if (onProgress && total > 0) {
-            onProgress(50 + Math.round((current / total) * 50)) // 50-100%
-          }
-        },
-      })
-      imglyPreloaded = true
-    }
+    // Phase 2: Download person segmentation model to cache (50-100%)
+    await preload({
+      ...imglyConfig,
+      progress: (_key: string, current: number, total: number) => {
+        if (onProgress && total > 0) {
+          onProgress(50 + Math.round((current / total) * 50)) // 50-100%
+        }
+      },
+    })
   } catch {
-    // Non-fatal: models will download on demand
+    // Non-fatal: models will download on demand in removeBg
   }
 }
 
@@ -144,7 +159,10 @@ export async function preloadModels(
  * (high saturation) so it's not caught by neutral detection, and it's
  * close to camera so depth keeps it.
  *
- * Mobile optimization: Models run sequentially to halve peak memory usage.
+ * Mobile memory strategy:
+ * 1. Load depth model → run → DISPOSE (free ~27MB)
+ * 2. Load person model → run → auto-cleaned by @imgly
+ * Only one AI model in memory at a time.
  */
 export async function removeBg(
   imageSource: Blob,
@@ -152,38 +170,30 @@ export async function removeBg(
 ): Promise<Blob> {
   onProgress?.(0)
 
-  // Ensure depth model is loaded (with WebGPU → WASM fallback)
-  if (!depthEstimator) {
-    const device = await detectDevice()
-    try {
-      depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
-        dtype: DEPTH_MODEL_DTYPE,
-        device,
-      })
-    } catch {
-      if (device === 'webgpu') {
-        console.warn('WebGPU pipeline failed, falling back to WASM')
-        depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
-          dtype: DEPTH_MODEL_DTYPE,
-          device: 'wasm',
-        })
-      } else {
-        throw new Error('Failed to load depth estimation model')
-      }
-    }
-  }
-
+  // ── Phase 1: Depth estimation (load → run → dispose) ──
+  const depthPipeline = await createDepthPipeline()
   onProgress?.(10)
 
-  // Run models SEQUENTIALLY to reduce peak memory on mobile
-  // (parallel execution doubles memory usage and crashes on mobile)
-  const depthMask = await runDepthEstimation(imageSource, onProgress)
+  const depthMask = await runDepthEstimation(depthPipeline, imageSource, onProgress)
+
+  // CRITICAL: Dispose depth model BEFORE loading person model
+  // This frees ~27MB of WASM memory, preventing OOM on mobile
+  try {
+    if (depthPipeline.dispose) {
+      await depthPipeline.dispose()
+    }
+  } catch {
+    // Non-fatal: GC will eventually clean up
+  }
+
   onProgress?.(50)
+
+  // ── Phase 2: Person segmentation (load → run → auto-cleanup) ──
   const personMask = await runPersonSegmentation(imageSource, onProgress)
 
   onProgress?.(80)
 
-  // Get original image dimensions and pixel data
+  // ── Phase 3: Merge all layers ──
   const origBitmap = await createImageBitmap(imageSource)
   const origW = origBitmap.width
   const origH = origBitmap.height
@@ -348,6 +358,8 @@ interface MaskResult {
 }
 
 async function runDepthEstimation(
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  depthPipeline: any,
   imageSource: Blob,
   onProgress?: (percent: number) => void
 ): Promise<MaskResult> {
@@ -361,7 +373,7 @@ async function runDepthEstimation(
 
   onProgress?.(20)
 
-  const output = await depthEstimator(rawImage)
+  const output = await depthPipeline(rawImage)
   const depthResult = Array.isArray(output) ? output[0] : output
   const depth = depthResult.depth as RawImage
 
