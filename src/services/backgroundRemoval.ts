@@ -1,14 +1,9 @@
 /**
  * Hybrid background removal: Depth Estimation + Person Segmentation
  *
- * Strategy: Person mask anchors the foreground, dilated person mask
- * constrains where depth mask is trusted. This prevents depth from
- * keeping wall decorations far from people.
- *
- * 1. Person mask  → keeps people with clean edges
- * 2. Dilated person mask → defines "near people" zone
- * 3. Depth mask   → keeps close objects (table, food)
- * 4. Final merge  → person OR (depth AND near-person zone)
+ * 1. Depth mask  → keeps everything close to camera (table, food, objects)
+ * 2. Person mask → keeps people with clean edges
+ * 3. OR merge    → union of both masks = complete foreground
  */
 import { pipeline, RawImage, env } from '@huggingface/transformers'
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
@@ -18,12 +13,9 @@ env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
-const SIGMOID_STEEPNESS = 0.12 // controls transition sharpness
-
-// ── Person dilation config (works at 1/4 resolution for speed) ──
-const DILATION_SCALE = 4 // downscale factor before dilation
-const DILATION_BLUR_RADIUS = 60 // blur radius at 1/4 res → ~240px at full res
-const DILATION_THRESHOLD = 8 // alpha threshold after blur (lower = more dilation)
+const SIGMOID_STEEPNESS = 0.15 // controls transition sharpness (higher = sharper)
+const THRESHOLD_BIAS = 0.90 // slight Otsu bias to retain foreground
+const VERTICAL_WEIGHT = 0.35 // vertical position bias: top=stricter, bottom=lenient
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -100,8 +92,8 @@ export async function preloadModels(
 }
 
 /**
- * Remove background using spatially-constrained hybrid approach:
- * person mask (anchor) + dilated zone + depth estimation.
+ * Remove background using hybrid approach:
+ * depth estimation (for table/food) + person segmentation (for people).
  */
 export async function removeBg(
   imageSource: Blob,
@@ -150,38 +142,18 @@ export async function removeBg(
   personBitmap.close()
   const personImageData = personCtx.getImageData(0, 0, origW, origH)
 
-  // Extract person alpha channel
-  const personAlpha = new Uint8Array(origW * origH)
-  for (let i = 0; i < origW * origH; i++) {
-    personAlpha[i] = personImageData.data[i * 4 + 3]
-  }
-
-  // Create dilated person zone at reduced resolution for speed
-  // Full-res dilation would be too slow; 1/4 scale + large radius = ~240px at full res
-  const smallW = Math.round(origW / DILATION_SCALE)
-  const smallH = Math.round(origH / DILATION_SCALE)
-  const smallPersonAlpha = resizeMask(personAlpha, origW, origH, smallW, smallH)
-  const smallDilated = dilateMask(smallPersonAlpha, smallW, smallH, DILATION_BLUR_RADIUS, DILATION_THRESHOLD)
-  const dilated = resizeMask(smallDilated, smallW, smallH, origW, origH)
-
   // Resize depth mask to original image size
   const resizedDepthMask = resizeMask(depthMask.data, depthMask.width, depthMask.height, origW, origH)
 
   onProgress?.(90)
 
-  // Merge: person OR (depth AND dilated-person-zone)
-  // - Person mask → always kept (clean person edges)
-  // - Depth mask → only trusted within dilated person zone
-  // - Wall/decor far from people → removed regardless of depth
+  // Merge masks with OR: foreground if EITHER depth says close OR person detected
   const imageData = ctx.getImageData(0, 0, origW, origH)
   for (let i = 0; i < origW * origH; i++) {
-    const person = personAlpha[i]
-    const depth = resizedDepthMask[i]
-    const zone = dilated[i]
-
-    // Depth contribution constrained to near-person zone
-    const constrainedDepth = Math.round((depth / 255) * (zone / 255) * 255)
-    imageData.data[i * 4 + 3] = Math.max(person, constrainedDepth)
+    const depthAlpha = resizedDepthMask[i]
+    const personAlpha = personImageData.data[i * 4 + 3] // alpha channel of person mask
+    // Take the maximum of both masks (OR merge)
+    imageData.data[i * 4 + 3] = Math.max(depthAlpha, personAlpha)
   }
   ctx.putImageData(imageData, 0, 0)
 
@@ -255,9 +227,12 @@ async function runPersonSegmentation(
 // ──────────────────────────────────────────────
 
 /**
- * Create a soft depth mask using Otsu threshold + sigmoid.
- * Plain Otsu is sufficient here because the dilated person mask
- * constrains where depth is trusted (in removeBg merge step).
+ * Create a soft mask using position-aware biased Otsu threshold + sigmoid.
+ *
+ * Key insight for photo booth: table/food is always at BOTTOM, wall is at TOP.
+ * - Bottom of image → lower threshold → keeps table/food
+ * - Top of image → higher threshold → removes wall/decorations
+ * - People's heads at top → handled by person mask (OR merge), not depth
  */
 function createDepthMask(
   depthData: Uint8Array,
@@ -265,10 +240,18 @@ function createDepthMask(
   height: number,
   blurRadius: number
 ): Uint8Array {
-  const threshold = otsuThreshold(depthData)
+  const otsu = otsuThreshold(depthData)
+  const baseThreshold = Math.round(otsu * THRESHOLD_BIAS)
 
+  // Apply position-aware sigmoid soft mask
   const mask = new Uint8Array(width * height)
   for (let i = 0; i < depthData.length; i++) {
+    const y = Math.floor(i / width)
+    const verticalPos = y / height // 0 = top, 1 = bottom
+
+    // Top: threshold rises (stricter), Bottom: stays at base (lenient)
+    const threshold = baseThreshold + (1 - verticalPos) * baseThreshold * VERTICAL_WEIGHT
+
     const diff = depthData[i] - threshold
     const sigmoid = 1 / (1 + Math.exp(-diff * SIGMOID_STEEPNESS))
     mask[i] = Math.round(sigmoid * 255)
@@ -279,6 +262,7 @@ function createDepthMask(
 
 /**
  * Otsu's method: find the threshold that minimizes intra-class variance.
+ * Automatically adapts to each image's depth distribution.
  */
 function otsuThreshold(data: Uint8Array): number {
   const histogram = new Array(256).fill(0)
@@ -314,26 +298,6 @@ function otsuThreshold(data: Uint8Array): number {
   }
 
   return bestThreshold
-}
-
-/**
- * Dilate a mask by blurring then thresholding.
- * Creates an expanded "zone of interest" around detected regions.
- */
-function dilateMask(
-  mask: Uint8Array,
-  width: number,
-  height: number,
-  blurRadius: number,
-  threshold: number
-): Uint8Array {
-  const blurred = gaussianBlur(mask, width, height, blurRadius)
-  const result = new Uint8Array(width * height)
-  for (let i = 0; i < blurred.length; i++) {
-    result[i] = blurred[i] > threshold ? 255 : 0
-  }
-  // Smooth the dilated mask edges
-  return gaussianBlur(result, width, height, Math.round(blurRadius / 4))
 }
 
 function gaussianBlur(
