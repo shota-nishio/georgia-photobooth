@@ -13,7 +13,7 @@ env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
-const SIGMOID_STEEPNESS = 0.08 // controls transition softness (lower = softer)
+const SIGMOID_STEEPNESS = 0.15 // controls transition sharpness (higher = sharper)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
