@@ -201,9 +201,18 @@ export async function removeBg(
     const farness = Math.pow(1 - depthAlpha / 255, 1.5)
     const baseAlpha = Math.round(depthAlpha * (1 - isBg * farness))
 
-    // Layer 3: Person mask boost — IS-Net alpha > threshold → fully opaque
+    // Layer 3: Person mask boost — with white fringe removal
+    // Edge pixels (low IS-Net alpha) that look like wall → don't boost (removes white halo)
+    // Strong person pixels (high IS-Net alpha) → always boost
     const rawPersonAlpha = personImageData.data[i * 4 + 3]
-    const boostedPerson = rawPersonAlpha > PERSON_BOOST_THRESHOLD ? 255 : 0
+    let boostedPerson = 0
+    if (rawPersonAlpha > PERSON_BOOST_THRESHOLD) {
+      if (rawPersonAlpha >= 128 || isBg < 0.5) {
+        // Clearly person OR edge on non-wall area → full boost
+        boostedPerson = 255
+      }
+      // else: weak edge pixel on wall-colored area → white fringe, skip boost
+    }
 
     // Final merge: keep pixel if ANY protective layer says keep
     // Table/food survives via: depth (close to camera) + color (high saturation)
