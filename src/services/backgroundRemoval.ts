@@ -13,16 +13,16 @@ env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 12
-const SIGMOID_STEEPNESS = 0.10 // soft transition retains mid-distance objects (people sitting far back)
-const THRESHOLD_BIAS = 0.85 // moderately lenient Otsu threshold
-const VERTICAL_WEIGHT = 0.30 // mild vertical bias: top=stricter, bottom=lenient
+const SIGMOID_STEEPNESS = 0.12 // moderate transition sharpness
+const THRESHOLD_BIAS = 0.80 // lenient Otsu threshold to keep more foreground
+const VERTICAL_WEIGHT = 0.40 // strong vertical bias: top=strict (wall), bottom=lenient (table)
 
 // ── Table retention config ──
-// Ambassador's room photos: table/food is always at bottom of image.
-// This floor GUARANTEES bottom area stays opaque regardless of depth accuracy.
-const TABLE_FLOOR_START = 0.30 // vertical ratio where floor begins (0=top, 1=bottom)
-const TABLE_FLOOR_RAMP = 0.20 // transition width: reaches full strength over this distance
-const TABLE_FLOOR_STRENGTH = 245 // max floor alpha (0-255, nearly fully opaque)
+// Ambassador's room photos: table starts at ~55% from top.
+// Floor only protects below 50% to avoid keeping wall on sides.
+const TABLE_FLOOR_START = 0.50 // vertical ratio where floor begins (0=top, 1=bottom)
+const TABLE_FLOOR_RAMP = 0.12 // fast ramp: full strength by verticalPos 0.62
+const TABLE_FLOOR_STRENGTH = 240 // max floor alpha (0-255)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
