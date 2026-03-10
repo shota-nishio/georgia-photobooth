@@ -195,8 +195,11 @@ export async function removeBg(
     const isBg = wallMask[i] / 255 // 0.0 = foreground, 1.0 = background
     const depthAlpha = resizedDepthMask[i]
 
-    // baseAlpha: if background detected, force transparent. Otherwise use depth.
-    const baseAlpha = Math.round(depthAlpha * (1 - isBg))
+    // baseAlpha: color detection weighted by distance.
+    // Close objects (table/food) resist color removal; far objects (wall/floor) don't.
+    // Math.pow(1 - depth/255, 1.5) = 0 when close, ~1 when far
+    const farness = Math.pow(1 - depthAlpha / 255, 1.5)
+    const baseAlpha = Math.round(depthAlpha * (1 - isBg * farness))
 
     // Layer 3: Person mask boost — IS-Net alpha > threshold → fully opaque
     const rawPersonAlpha = personImageData.data[i * 4 + 3]
