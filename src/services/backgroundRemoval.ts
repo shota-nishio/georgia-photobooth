@@ -1,6 +1,13 @@
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
 
 const config: Config = {
+  model: 'isnet',
+  device: 'gpu',
+  output: {
+    type: 'foreground',
+    format: 'image/png',
+    quality: 0.8,
+  },
   progress: () => {},
 }
 
