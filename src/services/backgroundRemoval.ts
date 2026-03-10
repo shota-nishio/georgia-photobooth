@@ -20,8 +20,9 @@ const VERTICAL_WEIGHT = 0.30 // mild vertical bias: top=stricter, bottom=lenient
 // ── Table retention config ──
 // Ambassador's room photos: table/food is always at bottom of image.
 // This floor GUARANTEES bottom area stays opaque regardless of depth accuracy.
-const TABLE_FLOOR_START = 0.45 // vertical ratio where floor begins (0=top, 1=bottom)
-const TABLE_FLOOR_STRENGTH = 220 // max floor alpha at very bottom (0-255)
+const TABLE_FLOOR_START = 0.30 // vertical ratio where floor begins (0=top, 1=bottom)
+const TABLE_FLOOR_RAMP = 0.20 // transition width: reaches full strength over this distance
+const TABLE_FLOOR_STRENGTH = 245 // max floor alpha (0-255, nearly fully opaque)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -165,12 +166,13 @@ export async function removeBg(
     const depthAlpha = resizedDepthMask[i]
     const personAlpha = personImageData.data[i * 4 + 3] // alpha channel of person mask
 
-    // Table retention floor: bottom portion guaranteed mostly opaque.
-    // Quadratic curve for gradual onset — kicks in strongly only near very bottom.
+    // Table retention floor: bottom portion guaranteed opaque.
+    // Linear ramp reaches full strength quickly (by verticalPos 0.50).
+    // 30-50%: gradual transition | 50%+: fully opaque (table/food area)
     let tableFloor = 0
     if (verticalPos > TABLE_FLOOR_START) {
-      const t = (verticalPos - TABLE_FLOOR_START) / (1 - TABLE_FLOOR_START)
-      tableFloor = Math.round(t * t * TABLE_FLOOR_STRENGTH)
+      const t = Math.min(1, (verticalPos - TABLE_FLOOR_START) / TABLE_FLOOR_RAMP)
+      tableFloor = Math.round(t * TABLE_FLOOR_STRENGTH)
     }
 
     // 3-way max: foreground if ANY source says keep
