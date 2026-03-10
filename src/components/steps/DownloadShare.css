@@ -1,0 +1,36 @@
+.download {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 16px;
+}
+
+.download-preview-wrap {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 8px;
+  overflow: hidden;
+}
+
+.download-preview {
+  max-width: 100%;
+  max-height: 100%;
+  border-radius: var(--ge-radius);
+  box-shadow: var(--ge-shadow-lg);
+}
+
+.download-thank-you {
+  text-align: center;
+  padding: 12px 0;
+  color: var(--ge-text-muted);
+  font-size: 14px;
+  line-height: 1.6;
+}
+
+.download-btn {
+  text-decoration: none;
+  text-align: center;
+}
