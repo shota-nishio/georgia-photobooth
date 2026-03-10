@@ -1,7 +1,4 @@
-// 1280px is sufficient for phone screen display and dramatically reduces
-// memory usage on mobile devices (canvas + typed arrays).
-// 2048px caused OOM crashes on some mobile browsers.
-const MAX_SIZE = 1280
+const MAX_SIZE = 2048
 
 export async function resizeImage(blob: Blob): Promise<Blob> {
   const bitmap = await createImageBitmap(blob)
