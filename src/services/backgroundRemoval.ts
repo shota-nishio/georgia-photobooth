@@ -44,9 +44,11 @@ const VERTICAL_WEIGHT = 0.30       // mild vertical bias
 const PERSON_BOOST_THRESHOLD = 30  // IS-Net alpha > this → 255 (fully opaque)
 
 // ── Person segmentation config (@imgly) ──
+// Use 'cpu' as safe default — 'gpu' crashes on many mobile devices.
+// IS-Net fp16 is small enough to run fast on CPU via WASM.
 const imglyConfig: Config = {
   model: 'isnet_fp16',
-  device: 'gpu',
+  device: 'cpu',
   output: {
     format: 'image/png',
     quality: 0.8,
