@@ -1,27 +1,35 @@
 /**
  * Color-first + Depth-assisted background removal
  *
- * Strategy (4 layers):
- * 1. White wall detection (COLOR)  → primary: detect bright low-saturation wall pixels
- * 2. Depth estimation (DEPTH)      → secondary: remove non-white distant objects (tapestry etc.)
- * 3. Person mask boost (IS-NET)    → guarantee people are fully opaque
- * 4. Table floor (POSITION)        → guarantee bottom area stays opaque
+ * Strategy (3 layers):
+ * 1. Neutral background detection (COLOR) → primary: position-aware HSL detection
+ *    - Top of image: strict (only clearly white/bright wall)
+ *    - Bottom of image: aggressive (catches floor, shadows, grey surfaces)
+ * 2. Depth estimation (DEPTH) → secondary: remove non-neutral distant objects
+ * 3. Person mask boost (IS-NET) → guarantee people are fully opaque
  *
  * Merge logic:
- *   baseAlpha = isWhiteWall ? 0 : depthAlpha
- *   finalAlpha = max(baseAlpha, boostedPersonAlpha, tableFloor)
+ *   baseAlpha = isBackground ? 0 : depthAlpha
+ *   finalAlpha = max(baseAlpha, boostedPersonAlpha)
  *
- * Key insight: Ambassador's room has WHITE walls. Color detection is far more
- * reliable than depth for separating wall from foreground. Depth only handles
- * non-white background elements (tapestry, ceiling decorations).
+ * Table/food protection: The patterned tablecloth has high saturation (blue patterns)
+ * and food is colorful → neither triggers neutral background detection.
+ * Table is also close to camera → depth keeps it.
  */
 import { pipeline, RawImage, env } from '@huggingface/transformers'
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
 
-// ── White wall / neutral background detection config (COLOR) ──
-const WALL_LIGHTNESS_MIN = 0.60    // HSL lightness threshold: catches shadows & cream walls
-const WALL_SATURATION_MAX = 0.25   // HSL saturation threshold: catches warm-toned walls
-const WALL_BLUR_RADIUS = 8         // blur the wall mask to smooth edges
+// ── Position-aware neutral background detection config (COLOR) ──
+// Top of image: strict thresholds (avoid catching people's faces/clothing)
+const WALL_LIGHTNESS_MIN_TOP = 0.62   // only clearly bright wall
+const WALL_SATURATION_MAX_TOP = 0.22  // only clearly colorless
+// Bottom of image: aggressive thresholds (catch floor, shadows, grey surfaces)
+const WALL_LIGHTNESS_MIN_BOTTOM = 0.38 // catches grey/beige floor
+const WALL_SATURATION_MAX_BOTTOM = 0.32 // catches warm-toned floor
+// Transition zone
+const WALL_AGGRESSIVE_START = 0.40    // start easing toward aggressive at 40% from top
+const WALL_AGGRESSIVE_FULL = 0.65     // fully aggressive by 65% from top
+const WALL_BLUR_RADIUS = 8            // blur the wall mask to smooth edges
 
 // ── Depth estimation config ──
 env.allowLocalModels = false
@@ -34,11 +42,6 @@ const VERTICAL_WEIGHT = 0.30       // mild vertical bias
 
 // ── Person mask boost config ──
 const PERSON_BOOST_THRESHOLD = 30  // IS-Net alpha > this → 255 (fully opaque)
-
-// ── Table retention config ──
-const TABLE_FLOOR_START = 0.50     // vertical ratio where floor begins (0=top, 1=bottom)
-const TABLE_FLOOR_RAMP = 0.12      // fast ramp: full strength by verticalPos 0.62
-const TABLE_FLOOR_STRENGTH = 240   // max floor alpha (0-255)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -117,10 +120,13 @@ export async function preloadModels(
 /**
  * Remove background using color-first + depth-assisted approach.
  *
- * Layer 1: White wall detection (COLOR) — primary removal
- * Layer 2: Depth estimation (DEPTH) — removes non-white distant objects
+ * Layer 1: Neutral background detection (COLOR) — position-aware primary removal
+ * Layer 2: Depth estimation (DEPTH) — removes non-neutral distant objects
  * Layer 3: Person mask boost (IS-NET) — guarantees people are opaque
- * Layer 4: Table floor (POSITION) — guarantees bottom area is opaque
+ *
+ * No table floor protection needed: table has patterned/colorful surface
+ * (high saturation) so it's not caught by neutral detection, and it's
+ * close to camera so depth keeps it.
  */
 export async function removeBg(
   imageSource: Blob,
@@ -182,35 +188,23 @@ export async function removeBg(
 
   onProgress?.(90)
 
-  // ── Merge all 4 layers ──
+  // ── Merge all 3 layers ──
   for (let i = 0; i < origW * origH; i++) {
-    const y = Math.floor(i / origW)
-    const verticalPos = y / origH // 0 = top, 1 = bottom
-
-    // Layer 1: White wall → alpha = 0 (transparent)
-    // wallMask[i] = 255 means "this IS white wall" → remove it
-    const isWall = wallMask[i] / 255 // 0.0 = not wall, 1.0 = wall
+    // Layer 1: Neutral background → alpha = 0 (transparent)
+    // wallMask[i] = 255 means "this IS background" → remove it
+    const isBg = wallMask[i] / 255 // 0.0 = foreground, 1.0 = background
     const depthAlpha = resizedDepthMask[i]
 
-    // baseAlpha: if wall detected, force transparent. Otherwise use depth.
-    const baseAlpha = Math.round(depthAlpha * (1 - isWall))
+    // baseAlpha: if background detected, force transparent. Otherwise use depth.
+    const baseAlpha = Math.round(depthAlpha * (1 - isBg))
 
     // Layer 3: Person mask boost — IS-Net alpha > threshold → fully opaque
     const rawPersonAlpha = personImageData.data[i * 4 + 3]
     const boostedPerson = rawPersonAlpha > PERSON_BOOST_THRESHOLD ? 255 : 0
 
-    // Layer 4: Table floor — bottom portion guaranteed opaque
-    // BUT only for non-wall pixels! White wall at bottom should still be removed.
-    let tableFloor = 0
-    if (verticalPos > TABLE_FLOOR_START) {
-      const t = Math.min(1, (verticalPos - TABLE_FLOOR_START) / TABLE_FLOOR_RAMP)
-      const rawFloor = Math.round(t * TABLE_FLOOR_STRENGTH)
-      // Scale floor by inverse wall strength: wall → no floor protection
-      tableFloor = Math.round(rawFloor * (1 - isWall))
-    }
-
     // Final merge: keep pixel if ANY protective layer says keep
-    pixels[i * 4 + 3] = Math.max(baseAlpha, boostedPerson, tableFloor)
+    // Table/food survives via: depth (close to camera) + color (high saturation)
+    pixels[i * 4 + 3] = Math.max(baseAlpha, boostedPerson)
   }
   ctx.putImageData(imageData, 0, 0)
 
@@ -233,15 +227,17 @@ export async function removeBg(
 // ──────────────────────────────────────────────
 
 /**
- * Detect white/bright wall pixels using HSL color space.
- * Returns mask: 255 = "this is white wall" (should be removed), 0 = "not wall"
+ * Position-aware neutral background detection using HSL color space.
+ * Returns mask: 255 = "this is background" (should be removed), 0 = "foreground"
  *
- * White wall characteristics:
- * - High lightness (bright)
- * - Low saturation (colorless / neutral)
+ * Position-aware thresholds:
+ * - Top of image (people's heads, upper wall): STRICT detection
+ *   → Only clearly white/bright wall. Avoids faces, light clothing.
+ * - Bottom of image (floor, lower wall): AGGRESSIVE detection
+ *   → Catches grey, beige, shadowed surfaces. Safe because table has
+ *     colorful patterned tablecloth (high saturation) and food is colorful.
  *
- * This will also flag white tablecloths and white clothing, but those
- * are protected by person mask (Layer 3) and table floor (Layer 4).
+ * White clothing on people is protected by person mask boost (Layer 3).
  */
 function detectWhiteWall(
   pixels: Uint8ClampedArray,
@@ -251,6 +247,9 @@ function detectWhiteWall(
   const mask = new Uint8Array(width * height)
 
   for (let i = 0; i < width * height; i++) {
+    const y = Math.floor(i / width)
+    const verticalPos = y / height // 0 = top, 1 = bottom
+
     const r = pixels[i * 4] / 255
     const g = pixels[i * 4 + 1] / 255
     const b = pixels[i * 4 + 2] / 255
@@ -266,15 +265,22 @@ function detectWhiteWall(
       s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
     }
 
-    // White wall: bright AND colorless
-    if (l >= WALL_LIGHTNESS_MIN && s <= WALL_SATURATION_MAX) {
-      // Soft edge: how strongly "wall-like" this pixel is
-      // More white = stronger wall signal
-      const lightnessStrength = Math.min(1, (l - WALL_LIGHTNESS_MIN) / (1 - WALL_LIGHTNESS_MIN))
-      const saturationStrength = Math.min(1, (WALL_SATURATION_MAX - s) / WALL_SATURATION_MAX)
+    // Position-aware thresholds: interpolate between strict (top) and aggressive (bottom)
+    let blend = 0
+    if (verticalPos > WALL_AGGRESSIVE_START) {
+      blend = Math.min(1, (verticalPos - WALL_AGGRESSIVE_START) / (WALL_AGGRESSIVE_FULL - WALL_AGGRESSIVE_START))
+    }
+    const lightnessMin = WALL_LIGHTNESS_MIN_TOP + (WALL_LIGHTNESS_MIN_BOTTOM - WALL_LIGHTNESS_MIN_TOP) * blend
+    const saturationMax = WALL_SATURATION_MAX_TOP + (WALL_SATURATION_MAX_BOTTOM - WALL_SATURATION_MAX_TOP) * blend
+
+    // Neutral background: light enough AND colorless enough
+    if (l >= lightnessMin && s <= saturationMax) {
+      // Soft edge: how strongly "background-like" this pixel is
+      const lightnessStrength = Math.min(1, (l - lightnessMin) / Math.max(0.01, 1 - lightnessMin))
+      const saturationStrength = Math.min(1, (saturationMax - s) / Math.max(0.01, saturationMax))
       mask[i] = Math.round(lightnessStrength * saturationStrength * 255)
     }
-    // else mask[i] remains 0 (not wall)
+    // else mask[i] remains 0 (foreground)
   }
 
   return mask
