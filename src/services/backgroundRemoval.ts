@@ -20,9 +20,10 @@ const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
 const SIGMOID_STEEPNESS = 0.12 // controls transition sharpness
 
-// ── Person dilation config ──
-const DILATION_BLUR_RADIUS = 80 // gaussian blur radius for dilating person mask
-const DILATION_THRESHOLD = 10 // alpha threshold after blur (lower = more dilation)
+// ── Person dilation config (works at 1/4 resolution for speed) ──
+const DILATION_SCALE = 4 // downscale factor before dilation
+const DILATION_BLUR_RADIUS = 60 // blur radius at 1/4 res → ~240px at full res
+const DILATION_THRESHOLD = 8 // alpha threshold after blur (lower = more dilation)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -155,8 +156,13 @@ export async function removeBg(
     personAlpha[i] = personImageData.data[i * 4 + 3]
   }
 
-  // Create dilated person zone (blur + threshold)
-  const dilated = dilateMask(personAlpha, origW, origH, DILATION_BLUR_RADIUS, DILATION_THRESHOLD)
+  // Create dilated person zone at reduced resolution for speed
+  // Full-res dilation would be too slow; 1/4 scale + large radius = ~240px at full res
+  const smallW = Math.round(origW / DILATION_SCALE)
+  const smallH = Math.round(origH / DILATION_SCALE)
+  const smallPersonAlpha = resizeMask(personAlpha, origW, origH, smallW, smallH)
+  const smallDilated = dilateMask(smallPersonAlpha, smallW, smallH, DILATION_BLUR_RADIUS, DILATION_THRESHOLD)
+  const dilated = resizeMask(smallDilated, smallW, smallH, origW, origH)
 
   // Resize depth mask to original image size
   const resizedDepthMask = resizeMask(depthMask.data, depthMask.width, depthMask.height, origW, origH)
