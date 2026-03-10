@@ -5,7 +5,7 @@ env.allowLocalModels = false
 
 const MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const MODEL_DTYPE = 'q8' as const
-const DEPTH_THRESHOLD_PERCENTILE = 40 // keep closest 60% as foreground
+const DEPTH_THRESHOLD_PERCENTILE = 55 // keep closest 45% as foreground
 const BLUR_RADIUS = 5
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
