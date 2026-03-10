@@ -63,8 +63,6 @@ function reducer(state: AppState, action: AppAction): AppState {
 function App() {
   const [state, dispatch] = useReducer(reducer, initialState)
   const [finalCanvas, setFinalCanvas] = useState<HTMLCanvasElement | null>(null)
-  const [isTransitioning, setIsTransitioning] = useState(false)
-  const [displayStep, setDisplayStep] = useState<AppStep>(0)
 
   // Preload background removal models
   useEffect(() => {
@@ -95,14 +93,9 @@ function App() {
     []
   )
 
-  const goToStep = useCallback((step: AppStep) => {
-    setIsTransitioning(true)
-    setTimeout(() => {
-      dispatch({ type: 'SET_STEP', step })
-      setDisplayStep(step)
-      setIsTransitioning(false)
-    }, 200)
-  }, [])
+  const goToStep = (step: AppStep) => {
+    dispatch({ type: 'SET_STEP', step })
+  }
 
   const handlePhotoSelected = (photo: Blob) => {
     dispatch({ type: 'SET_ORIGINAL_PHOTO', photo })
@@ -113,7 +106,6 @@ function App() {
   const handleReset = () => {
     setFinalCanvas(null)
     dispatch({ type: 'RESET' })
-    setDisplayStep(0)
   }
 
   return (
@@ -127,49 +119,47 @@ function App() {
         </div>
       )}
 
-      <div className={`step-transition ${isTransitioning ? 'step-exit' : 'step-enter'}`}>
-        {displayStep === 0 && (
-          <WelcomeScreen onStart={() => goToStep(1)} />
-        )}
+      {state.step === 0 && (
+        <WelcomeScreen onStart={() => goToStep(1)} />
+      )}
 
-        {displayStep === 1 && (
-          <PhotoCapture
-            onPhotoSelected={handlePhotoSelected}
-            onBack={() => goToStep(0)}
-          />
-        )}
+      {state.step === 1 && (
+        <PhotoCapture
+          onPhotoSelected={handlePhotoSelected}
+          onBack={() => goToStep(0)}
+        />
+      )}
 
-        {displayStep === 2 && (
-          <BackgroundSelect
-            selectedId={state.selectedBackgroundId}
-            onSelect={(id) => dispatch({ type: 'SET_BACKGROUND', id })}
-            onNext={() => goToStep(3)}
-            onBack={() => goToStep(1)}
-            bgRemovalDone={state.bgRemovalDone}
-            bgRemovalProgress={state.bgRemovalProgress}
-          />
-        )}
+      {state.step === 2 && (
+        <BackgroundSelect
+          selectedId={state.selectedBackgroundId}
+          onSelect={(id) => dispatch({ type: 'SET_BACKGROUND', id })}
+          onNext={() => goToStep(3)}
+          onBack={() => goToStep(1)}
+          bgRemovalDone={state.bgRemovalDone}
+          bgRemovalProgress={state.bgRemovalProgress}
+        />
+      )}
 
-        {displayStep === 3 && state.removedBgPhoto && state.selectedBackgroundId && (
-          <PreviewEdit
-            personBlob={state.removedBgPhoto}
-            backgroundId={state.selectedBackgroundId}
-            onComplete={(canvas) => {
-              setFinalCanvas(canvas)
-              goToStep(4)
-            }}
-            onChangeBackground={() => goToStep(2)}
-            onBack={() => goToStep(2)}
-          />
-        )}
+      {state.step === 3 && state.removedBgPhoto && state.selectedBackgroundId && (
+        <PreviewEdit
+          personBlob={state.removedBgPhoto}
+          backgroundId={state.selectedBackgroundId}
+          onComplete={(canvas) => {
+            setFinalCanvas(canvas)
+            goToStep(4)
+          }}
+          onChangeBackground={() => goToStep(2)}
+          onBack={() => goToStep(2)}
+        />
+      )}
 
-        {displayStep === 4 && finalCanvas && (
-          <DownloadShare
-            canvas={finalCanvas}
-            onRetake={handleReset}
-          />
-        )}
-      </div>
+      {state.step === 4 && finalCanvas && (
+        <DownloadShare
+          canvas={finalCanvas}
+          onRetake={handleReset}
+        />
+      )}
     </div>
   )
 }

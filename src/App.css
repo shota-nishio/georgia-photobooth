@@ -31,24 +31,6 @@
   }
 }
 
-/* Step transition wrapper */
-.step-transition {
-  flex: 1;
-  display: flex;
-  flex-direction: column;
-  overflow-x: hidden;
-  overflow-y: auto;
-  -webkit-overflow-scrolling: touch;
-}
-
-.step-enter {
-  animation: slideInRight 0.4s var(--ge-ease-out-expo) both;
-}
-
-.step-exit {
-  animation: slideOutLeft 0.2s ease-in both;
-}
-
 .error-banner {
   background: #FEE2E2;
   color: #991B1B;
