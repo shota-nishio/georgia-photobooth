@@ -60,60 +60,74 @@ const imglyConfig: Config = {
 let depthEstimator: any = null
 let imglyPreloaded = false
 
-function detectDevice(): 'webgpu' | 'wasm' {
+/**
+ * Detect available device for depth estimation model.
+ * Attempts WebGPU with actual adapter check, falls back to WASM.
+ * On mobile, WebGPU adapter usually fails → safe WASM fallback.
+ */
+async function detectDevice(): Promise<'webgpu' | 'wasm'> {
   try {
     if (typeof navigator !== 'undefined' && 'gpu' in navigator) {
-      return 'webgpu'
+      const adapter = await (navigator as any).gpu.requestAdapter()
+      if (adapter) {
+        return 'webgpu'
+      }
     }
   } catch {
-    // ignore
+    // WebGPU not available or adapter request failed
   }
   return 'wasm'
 }
 
 /**
- * Preload both models in parallel.
+ * Preload both models sequentially to minimize peak memory on mobile.
  */
 export async function preloadModels(
   onProgress?: (percent: number) => void
 ): Promise<void> {
-  const tasks: Promise<void>[] = []
+  try {
+    // Preload depth estimation model first
+    if (!depthEstimator) {
+      const device = await detectDevice()
+      try {
+        depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+          dtype: DEPTH_MODEL_DTYPE,
+          device,
+          progress_callback: (progress: { status: string; progress?: number }) => {
+            if (onProgress && progress.progress != null) {
+              onProgress(Math.round(progress.progress * 0.5)) // 0-50%
+            }
+          },
+        })
+      } catch {
+        // WebGPU pipeline failed → retry with WASM
+        if (device === 'webgpu') {
+          console.warn('WebGPU pipeline failed, falling back to WASM')
+          depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+            dtype: DEPTH_MODEL_DTYPE,
+            device: 'wasm',
+            progress_callback: (progress: { status: string; progress?: number }) => {
+              if (onProgress && progress.progress != null) {
+                onProgress(Math.round(progress.progress * 0.5)) // 0-50%
+              }
+            },
+          })
+        }
+      }
+    }
 
-  // Preload depth estimation model
-  if (!depthEstimator) {
-    tasks.push(
-      pipeline('depth-estimation', DEPTH_MODEL_ID, {
-        dtype: DEPTH_MODEL_DTYPE,
-        device: detectDevice(),
-        progress_callback: (progress: { status: string; progress?: number }) => {
-          if (onProgress && progress.progress != null) {
-            onProgress(Math.round(progress.progress * 0.5)) // 0-50%
-          }
-        },
-      }).then((p) => {
-        depthEstimator = p
-      })
-    )
-  }
-
-  // Preload person segmentation model
-  if (!imglyPreloaded) {
-    tasks.push(
-      preload({
+    // Then preload person segmentation model
+    if (!imglyPreloaded) {
+      await preload({
         ...imglyConfig,
         progress: (_key: string, current: number, total: number) => {
           if (onProgress && total > 0) {
             onProgress(50 + Math.round((current / total) * 50)) // 50-100%
           }
         },
-      }).then(() => {
-        imglyPreloaded = true
       })
-    )
-  }
-
-  try {
-    await Promise.all(tasks)
+      imglyPreloaded = true
+    }
   } catch {
     // Non-fatal: models will download on demand
   }
@@ -129,6 +143,8 @@ export async function preloadModels(
  * No table floor protection needed: table has patterned/colorful surface
  * (high saturation) so it's not caught by neutral detection, and it's
  * close to camera so depth keeps it.
+ *
+ * Mobile optimization: Models run sequentially to halve peak memory usage.
  */
 export async function removeBg(
   imageSource: Blob,
@@ -136,21 +152,34 @@ export async function removeBg(
 ): Promise<Blob> {
   onProgress?.(0)
 
-  // Ensure depth model is loaded
+  // Ensure depth model is loaded (with WebGPU → WASM fallback)
   if (!depthEstimator) {
-    depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
-      dtype: DEPTH_MODEL_DTYPE,
-      device: detectDevice(),
-    })
+    const device = await detectDevice()
+    try {
+      depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+        dtype: DEPTH_MODEL_DTYPE,
+        device,
+      })
+    } catch {
+      if (device === 'webgpu') {
+        console.warn('WebGPU pipeline failed, falling back to WASM')
+        depthEstimator = await pipeline('depth-estimation', DEPTH_MODEL_ID, {
+          dtype: DEPTH_MODEL_DTYPE,
+          device: 'wasm',
+        })
+      } else {
+        throw new Error('Failed to load depth estimation model')
+      }
+    }
   }
 
   onProgress?.(10)
 
-  // Run both models in parallel
-  const [depthMask, personMask] = await Promise.all([
-    runDepthEstimation(imageSource, onProgress),
-    runPersonSegmentation(imageSource, onProgress),
-  ])
+  // Run models SEQUENTIALLY to reduce peak memory on mobile
+  // (parallel execution doubles memory usage and crashes on mobile)
+  const depthMask = await runDepthEstimation(imageSource, onProgress)
+  onProgress?.(50)
+  const personMask = await runPersonSegmentation(imageSource, onProgress)
 
   onProgress?.(80)
 
@@ -184,6 +213,10 @@ export async function removeBg(
   personCtx.drawImage(personBitmap, 0, 0, origW, origH)
   personBitmap.close()
   const personImageData = personCtx.getImageData(0, 0, origW, origH)
+
+  // Free person canvas memory immediately
+  personCanvas.width = 0
+  personCanvas.height = 0
 
   // Resize depth mask to original image size
   const resizedDepthMask = resizeMask(depthMask.data, depthMask.width, depthMask.height, origW, origH)
@@ -231,6 +264,10 @@ export async function removeBg(
       'image/png'
     )
   })
+
+  // Free canvas memory
+  canvas.width = 0
+  canvas.height = 0
 
   onProgress?.(100)
   return result
@@ -315,8 +352,12 @@ async function runDepthEstimation(
   onProgress?: (percent: number) => void
 ): Promise<MaskResult> {
   const url = URL.createObjectURL(imageSource)
-  const rawImage = await RawImage.fromURL(url)
-  URL.revokeObjectURL(url)
+  let rawImage: RawImage
+  try {
+    rawImage = await RawImage.fromURL(url)
+  } finally {
+    URL.revokeObjectURL(url)
+  }
 
   onProgress?.(20)
 
@@ -344,7 +385,7 @@ async function runPersonSegmentation(
     ...imglyConfig,
     progress: (_key: string, current: number, total: number) => {
       if (onProgress && total > 0) {
-        onProgress(30 + Math.round((current / total) * 30)) // 30-60%
+        onProgress(50 + Math.round((current / total) * 30)) // 50-80%
       }
     },
   })
