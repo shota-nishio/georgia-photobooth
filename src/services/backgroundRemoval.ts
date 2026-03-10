@@ -14,7 +14,8 @@ const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
 const SIGMOID_STEEPNESS = 0.15 // controls transition sharpness (higher = sharper)
-const THRESHOLD_BIAS = 0.85 // lower Otsu threshold by 15% to retain more foreground
+const THRESHOLD_BIAS = 0.90 // slight Otsu bias to retain foreground
+const VERTICAL_WEIGHT = 0.35 // vertical position bias: top=stricter, bottom=lenient
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -226,9 +227,12 @@ async function runPersonSegmentation(
 // ──────────────────────────────────────────────
 
 /**
- * Create a soft mask using biased Otsu threshold + sigmoid transition.
- * Otsu finds the optimal split, then THRESHOLD_BIAS lowers it slightly
- * to retain more foreground (table/food) across different photos.
+ * Create a soft mask using position-aware biased Otsu threshold + sigmoid.
+ *
+ * Key insight for photo booth: table/food is always at BOTTOM, wall is at TOP.
+ * - Bottom of image → lower threshold → keeps table/food
+ * - Top of image → higher threshold → removes wall/decorations
+ * - People's heads at top → handled by person mask (OR merge), not depth
  */
 function createDepthMask(
   depthData: Uint8Array,
@@ -236,13 +240,18 @@ function createDepthMask(
   height: number,
   blurRadius: number
 ): Uint8Array {
-  // Find optimal threshold using Otsu's method, then bias it lower
   const otsu = otsuThreshold(depthData)
-  const threshold = Math.round(otsu * THRESHOLD_BIAS)
+  const baseThreshold = Math.round(otsu * THRESHOLD_BIAS)
 
-  // Apply sigmoid soft mask (smooth transition around threshold)
+  // Apply position-aware sigmoid soft mask
   const mask = new Uint8Array(width * height)
   for (let i = 0; i < depthData.length; i++) {
+    const y = Math.floor(i / width)
+    const verticalPos = y / height // 0 = top, 1 = bottom
+
+    // Top: threshold rises (stricter), Bottom: stays at base (lenient)
+    const threshold = baseThreshold + (1 - verticalPos) * baseThreshold * VERTICAL_WEIGHT
+
     const diff = depthData[i] - threshold
     const sigmoid = 1 / (1 + Math.exp(-diff * SIGMOID_STEEPNESS))
     mask[i] = Math.round(sigmoid * 255)
