@@ -14,7 +14,7 @@ const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
 const SIGMOID_STEEPNESS = 0.15 // controls transition sharpness (higher = sharper)
-const FOREGROUND_MIN_RATIO = 0.65 // safety net: always keep at least 65% as foreground
+const THRESHOLD_BIAS = 0.85 // lower Otsu threshold by 15% to retain more foreground
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -226,9 +226,9 @@ async function runPersonSegmentation(
 // ──────────────────────────────────────────────
 
 /**
- * Create a soft mask using Otsu threshold + percentile safety net + sigmoid.
- * Uses the LOWER of Otsu vs percentile threshold to ensure stable foreground
- * preservation across different photos.
+ * Create a soft mask using biased Otsu threshold + sigmoid transition.
+ * Otsu finds the optimal split, then THRESHOLD_BIAS lowers it slightly
+ * to retain more foreground (table/food) across different photos.
  */
 function createDepthMask(
   depthData: Uint8Array,
@@ -236,17 +236,9 @@ function createDepthMask(
   height: number,
   blurRadius: number
 ): Uint8Array {
-  // Build histogram (shared between Otsu and percentile)
-  const histogram = new Array(256).fill(0)
-  for (let i = 0; i < depthData.length; i++) {
-    histogram[depthData[i]]++
-  }
-  const total = depthData.length
-
-  // Two threshold strategies, take the more conservative (lower) one
-  const otsu = otsuFromHistogram(histogram, total)
-  const pctFloor = percentileFromHistogram(histogram, total, 1 - FOREGROUND_MIN_RATIO)
-  const threshold = Math.min(otsu, pctFloor)
+  // Find optimal threshold using Otsu's method, then bias it lower
+  const otsu = otsuThreshold(depthData)
+  const threshold = Math.round(otsu * THRESHOLD_BIAS)
 
   // Apply sigmoid soft mask (smooth transition around threshold)
   const mask = new Uint8Array(width * height)
@@ -261,8 +253,15 @@ function createDepthMask(
 
 /**
  * Otsu's method: find the threshold that minimizes intra-class variance.
+ * Automatically adapts to each image's depth distribution.
  */
-function otsuFromHistogram(histogram: number[], total: number): number {
+function otsuThreshold(data: Uint8Array): number {
+  const histogram = new Array(256).fill(0)
+  for (let i = 0; i < data.length; i++) {
+    histogram[data[i]]++
+  }
+
+  const total = data.length
   let sumAll = 0
   for (let i = 0; i < 256; i++) sumAll += i * histogram[i]
 
@@ -290,20 +289,6 @@ function otsuFromHistogram(histogram: number[], total: number): number {
   }
 
   return bestThreshold
-}
-
-/**
- * Find the depth value at a given percentile from histogram.
- * e.g. percentile=0.35 returns the value below which 35% of pixels fall.
- */
-function percentileFromHistogram(histogram: number[], total: number, percentile: number): number {
-  const target = Math.floor(percentile * total)
-  let count = 0
-  for (let i = 0; i < 256; i++) {
-    count += histogram[i]
-    if (count >= target) return i
-  }
-  return 255
 }
 
 function gaussianBlur(
