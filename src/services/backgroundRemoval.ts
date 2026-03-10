@@ -12,10 +12,16 @@ import { removeBackground, preload, type Config } from '@imgly/background-remova
 env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
-const BLUR_RADIUS = 10
-const SIGMOID_STEEPNESS = 0.20 // controls transition sharpness (higher = sharper)
-const THRESHOLD_BIAS = 0.75 // lower Otsu threshold to retain more foreground
-const VERTICAL_WEIGHT = 0.50 // strong vertical bias: top=much stricter, bottom=lenient
+const BLUR_RADIUS = 12
+const SIGMOID_STEEPNESS = 0.10 // soft transition retains mid-distance objects (people sitting far back)
+const THRESHOLD_BIAS = 0.85 // moderately lenient Otsu threshold
+const VERTICAL_WEIGHT = 0.30 // mild vertical bias: top=stricter, bottom=lenient
+
+// ── Table retention config ──
+// Ambassador's room photos: table/food is always at bottom of image.
+// This floor GUARANTEES bottom area stays opaque regardless of depth accuracy.
+const TABLE_FLOOR_START = 0.45 // vertical ratio where floor begins (0=top, 1=bottom)
+const TABLE_FLOOR_STRENGTH = 220 // max floor alpha at very bottom (0-255)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -147,13 +153,28 @@ export async function removeBg(
 
   onProgress?.(90)
 
-  // Merge masks with OR: foreground if EITHER depth says close OR person detected
+  // Merge masks: depth + person + table floor (3-way OR)
+  // - depthAlpha:  keeps objects close to camera
+  // - personAlpha: keeps people with clean edges (IS-Net)
+  // - tableFloor:  guarantees bottom area stays opaque (table/food retention)
   const imageData = ctx.getImageData(0, 0, origW, origH)
   for (let i = 0; i < origW * origH; i++) {
+    const y = Math.floor(i / origW)
+    const verticalPos = y / origH // 0 = top, 1 = bottom
+
     const depthAlpha = resizedDepthMask[i]
     const personAlpha = personImageData.data[i * 4 + 3] // alpha channel of person mask
-    // Take the maximum of both masks (OR merge)
-    imageData.data[i * 4 + 3] = Math.max(depthAlpha, personAlpha)
+
+    // Table retention floor: bottom portion guaranteed mostly opaque.
+    // Quadratic curve for gradual onset — kicks in strongly only near very bottom.
+    let tableFloor = 0
+    if (verticalPos > TABLE_FLOOR_START) {
+      const t = (verticalPos - TABLE_FLOOR_START) / (1 - TABLE_FLOOR_START)
+      tableFloor = Math.round(t * t * TABLE_FLOOR_STRENGTH)
+    }
+
+    // 3-way max: foreground if ANY source says keep
+    imageData.data[i * 4 + 3] = Math.max(depthAlpha, personAlpha, tableFloor)
   }
   ctx.putImageData(imageData, 0, 0)
 
