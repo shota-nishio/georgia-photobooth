@@ -1,28 +1,44 @@
 /**
- * Hybrid background removal: Depth Estimation + Person Segmentation
+ * Color-first + Depth-assisted background removal
  *
- * 1. Depth mask  → keeps everything close to camera (table, food, objects)
- * 2. Person mask → keeps people with clean edges
- * 3. OR merge    → union of both masks = complete foreground
+ * Strategy (4 layers):
+ * 1. White wall detection (COLOR)  → primary: detect bright low-saturation wall pixels
+ * 2. Depth estimation (DEPTH)      → secondary: remove non-white distant objects (tapestry etc.)
+ * 3. Person mask boost (IS-NET)    → guarantee people are fully opaque
+ * 4. Table floor (POSITION)        → guarantee bottom area stays opaque
+ *
+ * Merge logic:
+ *   baseAlpha = isWhiteWall ? 0 : depthAlpha
+ *   finalAlpha = max(baseAlpha, boostedPersonAlpha, tableFloor)
+ *
+ * Key insight: Ambassador's room has WHITE walls. Color detection is far more
+ * reliable than depth for separating wall from foreground. Depth only handles
+ * non-white background elements (tapestry, ceiling decorations).
  */
 import { pipeline, RawImage, env } from '@huggingface/transformers'
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
+
+// ── White wall detection config (COLOR) ──
+const WALL_LIGHTNESS_MIN = 0.72    // HSL lightness threshold (0-1): above = "bright"
+const WALL_SATURATION_MAX = 0.18   // HSL saturation threshold (0-1): below = "colorless"
+const WALL_BLUR_RADIUS = 8         // blur the wall mask to smooth edges
 
 // ── Depth estimation config ──
 env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
-const BLUR_RADIUS = 12
-const SIGMOID_STEEPNESS = 0.12 // moderate transition sharpness
-const THRESHOLD_BIAS = 0.80 // lenient Otsu threshold to keep more foreground
-const VERTICAL_WEIGHT = 0.40 // strong vertical bias: top=strict (wall), bottom=lenient (table)
+const DEPTH_BLUR_RADIUS = 10
+const SIGMOID_STEEPNESS = 0.10     // gentle transition
+const THRESHOLD_BIAS = 0.85        // lenient: keep more foreground
+const VERTICAL_WEIGHT = 0.30       // mild vertical bias
+
+// ── Person mask boost config ──
+const PERSON_BOOST_THRESHOLD = 30  // IS-Net alpha > this → 255 (fully opaque)
 
 // ── Table retention config ──
-// Ambassador's room photos: table starts at ~55% from top.
-// Floor only protects below 50% to avoid keeping wall on sides.
-const TABLE_FLOOR_START = 0.50 // vertical ratio where floor begins (0=top, 1=bottom)
-const TABLE_FLOOR_RAMP = 0.12 // fast ramp: full strength by verticalPos 0.62
-const TABLE_FLOOR_STRENGTH = 240 // max floor alpha (0-255)
+const TABLE_FLOOR_START = 0.50     // vertical ratio where floor begins (0=top, 1=bottom)
+const TABLE_FLOOR_RAMP = 0.12      // fast ramp: full strength by verticalPos 0.62
+const TABLE_FLOOR_STRENGTH = 240   // max floor alpha (0-255)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -99,8 +115,12 @@ export async function preloadModels(
 }
 
 /**
- * Remove background using hybrid approach:
- * depth estimation (for table/food) + person segmentation (for people).
+ * Remove background using color-first + depth-assisted approach.
+ *
+ * Layer 1: White wall detection (COLOR) — primary removal
+ * Layer 2: Depth estimation (DEPTH) — removes non-white distant objects
+ * Layer 3: Person mask boost (IS-NET) — guarantees people are opaque
+ * Layer 4: Table floor (POSITION) — guarantees bottom area is opaque
  */
 export async function removeBg(
   imageSource: Blob,
@@ -126,7 +146,7 @@ export async function removeBg(
 
   onProgress?.(80)
 
-  // Get original image dimensions
+  // Get original image dimensions and pixel data
   const origBitmap = await createImageBitmap(imageSource)
   const origW = origBitmap.width
   const origH = origBitmap.height
@@ -138,6 +158,14 @@ export async function removeBg(
   const ctx = canvas.getContext('2d')!
   ctx.drawImage(origBitmap, 0, 0)
   origBitmap.close()
+
+  // Get original pixel data (for white wall detection)
+  const imageData = ctx.getImageData(0, 0, origW, origH)
+  const pixels = imageData.data
+
+  // ── Layer 1: White wall detection (COLOR) ──
+  const wallMaskRaw = detectWhiteWall(pixels, origW, origH)
+  const wallMask = gaussianBlur(wallMaskRaw, origW, origH, WALL_BLUR_RADIUS)
 
   // Get person mask as pixel data (same size as original)
   const personCanvas = document.createElement('canvas')
@@ -154,29 +182,32 @@ export async function removeBg(
 
   onProgress?.(90)
 
-  // Merge masks: depth + person + table floor (3-way OR)
-  // - depthAlpha:  keeps objects close to camera
-  // - personAlpha: keeps people with clean edges (IS-Net)
-  // - tableFloor:  guarantees bottom area stays opaque (table/food retention)
-  const imageData = ctx.getImageData(0, 0, origW, origH)
+  // ── Merge all 4 layers ──
   for (let i = 0; i < origW * origH; i++) {
     const y = Math.floor(i / origW)
     const verticalPos = y / origH // 0 = top, 1 = bottom
 
+    // Layer 1: White wall → alpha = 0 (transparent)
+    // wallMask[i] = 255 means "this IS white wall" → remove it
+    const isWall = wallMask[i] / 255 // 0.0 = not wall, 1.0 = wall
     const depthAlpha = resizedDepthMask[i]
-    const personAlpha = personImageData.data[i * 4 + 3] // alpha channel of person mask
 
-    // Table retention floor: bottom portion guaranteed opaque.
-    // Linear ramp reaches full strength quickly (by verticalPos 0.50).
-    // 30-50%: gradual transition | 50%+: fully opaque (table/food area)
+    // baseAlpha: if wall detected, force transparent. Otherwise use depth.
+    const baseAlpha = Math.round(depthAlpha * (1 - isWall))
+
+    // Layer 3: Person mask boost — IS-Net alpha > threshold → fully opaque
+    const rawPersonAlpha = personImageData.data[i * 4 + 3]
+    const boostedPerson = rawPersonAlpha > PERSON_BOOST_THRESHOLD ? 255 : 0
+
+    // Layer 4: Table floor — bottom portion guaranteed opaque
     let tableFloor = 0
     if (verticalPos > TABLE_FLOOR_START) {
       const t = Math.min(1, (verticalPos - TABLE_FLOOR_START) / TABLE_FLOOR_RAMP)
       tableFloor = Math.round(t * TABLE_FLOOR_STRENGTH)
     }
 
-    // 3-way max: foreground if ANY source says keep
-    imageData.data[i * 4 + 3] = Math.max(depthAlpha, personAlpha, tableFloor)
+    // Final merge: keep pixel if ANY protective layer says keep
+    pixels[i * 4 + 3] = Math.max(baseAlpha, boostedPerson, tableFloor)
   }
   ctx.putImageData(imageData, 0, 0)
 
@@ -195,7 +226,59 @@ export async function removeBg(
 }
 
 // ──────────────────────────────────────────────
-// Depth estimation pipeline
+// Layer 1: White wall detection (COLOR)
+// ──────────────────────────────────────────────
+
+/**
+ * Detect white/bright wall pixels using HSL color space.
+ * Returns mask: 255 = "this is white wall" (should be removed), 0 = "not wall"
+ *
+ * White wall characteristics:
+ * - High lightness (bright)
+ * - Low saturation (colorless / neutral)
+ *
+ * This will also flag white tablecloths and white clothing, but those
+ * are protected by person mask (Layer 3) and table floor (Layer 4).
+ */
+function detectWhiteWall(
+  pixels: Uint8ClampedArray,
+  width: number,
+  height: number
+): Uint8Array {
+  const mask = new Uint8Array(width * height)
+
+  for (let i = 0; i < width * height; i++) {
+    const r = pixels[i * 4] / 255
+    const g = pixels[i * 4 + 1] / 255
+    const b = pixels[i * 4 + 2] / 255
+
+    // RGB → HSL (we only need S and L)
+    const max = Math.max(r, g, b)
+    const min = Math.min(r, g, b)
+    const l = (max + min) / 2 // lightness
+
+    let s = 0 // saturation
+    if (max !== min) {
+      const d = max - min
+      s = l > 0.5 ? d / (2 - max - min) : d / (max + min)
+    }
+
+    // White wall: bright AND colorless
+    if (l >= WALL_LIGHTNESS_MIN && s <= WALL_SATURATION_MAX) {
+      // Soft edge: how strongly "wall-like" this pixel is
+      // More white = stronger wall signal
+      const lightnessStrength = Math.min(1, (l - WALL_LIGHTNESS_MIN) / (1 - WALL_LIGHTNESS_MIN))
+      const saturationStrength = Math.min(1, (WALL_SATURATION_MAX - s) / WALL_SATURATION_MAX)
+      mask[i] = Math.round(lightnessStrength * saturationStrength * 255)
+    }
+    // else mask[i] remains 0 (not wall)
+  }
+
+  return mask
+}
+
+// ──────────────────────────────────────────────
+// Layer 2: Depth estimation pipeline
 // ──────────────────────────────────────────────
 
 interface MaskResult {
@@ -221,13 +304,13 @@ async function runDepthEstimation(
   onProgress?.(40)
 
   const depthData = depth.data as Uint8Array
-  const mask = createDepthMask(depthData, depth.width, depth.height, BLUR_RADIUS)
+  const mask = createDepthMask(depthData, depth.width, depth.height, DEPTH_BLUR_RADIUS)
 
   return { data: mask, width: depth.width, height: depth.height }
 }
 
 // ──────────────────────────────────────────────
-// Person segmentation pipeline (@imgly)
+// Layer 3: Person segmentation pipeline (@imgly)
 // ──────────────────────────────────────────────
 
 async function runPersonSegmentation(
@@ -252,10 +335,9 @@ async function runPersonSegmentation(
 /**
  * Create a soft mask using position-aware biased Otsu threshold + sigmoid.
  *
- * Key insight for photo booth: table/food is always at BOTTOM, wall is at TOP.
- * - Bottom of image → lower threshold → keeps table/food
- * - Top of image → higher threshold → removes wall/decorations
- * - People's heads at top → handled by person mask (OR merge), not depth
+ * For the color-first approach, depth is secondary:
+ * it only needs to catch NON-white background (tapestry, ceiling decorations).
+ * Settings are lenient to avoid removing foreground objects.
  */
 function createDepthMask(
   depthData: Uint8Array,
@@ -285,7 +367,6 @@ function createDepthMask(
 
 /**
  * Otsu's method: find the threshold that minimizes intra-class variance.
- * Automatically adapts to each image's depth distribution.
  */
 function otsuThreshold(data: Uint8Array): number {
   const histogram = new Array(256).fill(0)
