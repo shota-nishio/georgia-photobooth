@@ -7,14 +7,15 @@
   justify-content: center;
   z-index: 100;
   backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
 }
 
 .loading-card {
   background: var(--ge-white);
-  border-radius: var(--ge-radius);
+  border-radius: 20px;
   padding: 32px 40px;
   text-align: center;
-  box-shadow: var(--ge-shadow-lg);
+  box-shadow: var(--ge-shadow-floating);
   min-width: 240px;
 }
 
@@ -45,7 +46,9 @@
 
 .loading-bar-fill {
   height: 100%;
-  background: var(--ge-red);
+  background: linear-gradient(90deg, var(--ge-red) 0%, var(--ge-gold) 50%, var(--ge-red) 100%);
+  background-size: 200% 100%;
+  animation: shimmer 2s ease-in-out infinite;
   border-radius: 3px;
   transition: width 0.3s ease;
 }

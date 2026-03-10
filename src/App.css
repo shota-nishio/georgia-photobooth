@@ -7,24 +7,44 @@
   background: var(--ge-white);
   position: relative;
   overflow-y: auto;
+  overflow-x: hidden;
   -webkit-overflow-scrolling: touch;
 }
 
 @media (min-width: 481px) {
+  body {
+    background: linear-gradient(135deg, #f5f0e8 0%, #ebe4d8 50%, #f5f0e8 100%);
+  }
+
   .app {
-    box-shadow: var(--ge-shadow-lg);
+    box-shadow: var(--ge-shadow-floating);
     height: 100vh;
     max-height: 900px;
     margin-top: auto;
     margin-bottom: auto;
-    border-radius: 20px;
+    border-radius: 24px;
+    border: 1px solid rgba(0, 0, 0, 0.06);
   }
-}
 
-@media (min-width: 481px) {
   #root {
     justify-content: center;
   }
+}
+
+/* Step transition wrapper */
+.step-transition {
+  flex: 1;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.step-enter {
+  animation: slideInRight 0.4s var(--ge-ease-out-expo) both;
+}
+
+.step-exit {
+  animation: slideOutLeft 0.2s ease-in both;
 }
 
 .error-banner {

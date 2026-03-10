@@ -43,13 +43,15 @@ export function BackgroundSelect({
                 className="bg-thumb"
                 loading="lazy"
               />
+              <div className="bg-thumb-overlay">
+                <span className="bg-overlay-name">
+                  {bgNames[bg.nameKey] ?? bg.nameKey}
+                </span>
+              </div>
               {selectedId === bg.id && (
-                <div className="bg-check">✓</div>
+                <div className="bg-check">&#10003;</div>
               )}
             </div>
-            <span className="bg-name">
-              {bgNames[bg.nameKey] ?? bg.nameKey}
-            </span>
           </button>
         ))}
       </div>

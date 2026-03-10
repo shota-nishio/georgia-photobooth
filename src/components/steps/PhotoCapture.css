@@ -23,22 +23,52 @@
   background: var(--ge-bg);
   border-radius: var(--ge-radius);
   border: 2px dashed var(--ge-border);
+  transition: all 0.35s var(--ge-ease-out-expo);
+  position: relative;
+  overflow: hidden;
+}
+
+.capture-option::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  background: radial-gradient(
+    circle at center,
+    rgba(218, 41, 28, 0.05) 0%,
+    transparent 70%
+  );
+  opacity: 0;
+  transition: opacity 0.3s ease;
 }
 
 .capture-option:hover {
   border-color: var(--ge-red);
-  background: #FFF5F5;
+  border-style: solid;
+  background: white;
+  transform: translateY(-2px);
+  box-shadow: var(--ge-shadow-elevated);
+}
+
+.capture-option:hover::before {
+  opacity: 1;
 }
 
 .capture-icon {
-  font-size: 40px;
+  font-size: 44px;
   line-height: 1;
+  transition: transform 0.4s var(--ge-ease-spring);
+  position: relative;
+}
+
+.capture-option:hover .capture-icon {
+  transform: scale(1.15);
 }
 
 .capture-label {
   font-size: 17px;
   font-weight: 600;
   color: var(--ge-text);
+  position: relative;
 }
 
 .capture-preview-wrap {
@@ -55,5 +85,5 @@
   max-width: 100%;
   object-fit: contain;
   border-radius: var(--ge-radius);
-  box-shadow: var(--ge-shadow-lg);
+  box-shadow: var(--ge-shadow-floating);
 }

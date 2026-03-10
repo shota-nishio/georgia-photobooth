@@ -4,6 +4,18 @@
   flex-direction: column;
   align-items: center;
   padding: 16px;
+  position: relative;
+  overflow: hidden;
+}
+
+/* Gold gradient title */
+.download-title {
+  background: var(--ge-gold-gradient);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+  position: relative;
+  z-index: 1;
 }
 
 .download-preview-wrap {
@@ -12,15 +24,64 @@
   align-items: center;
   justify-content: center;
   padding: 8px;
-  overflow: hidden;
+  overflow: visible;
+  position: relative;
 }
 
 .download-preview {
   max-width: 100%;
   max-height: 100%;
-  border-radius: var(--ge-radius);
-  box-shadow: var(--ge-shadow-lg);
+  border-radius: 16px;
+  box-shadow: var(--ge-shadow-floating);
+  border: 3px solid rgba(201, 169, 78, 0.3);
 }
+
+/* Sparkle decorations */
+.sparkle {
+  position: absolute;
+  width: 8px;
+  height: 8px;
+  background: var(--ge-gold);
+  border-radius: 50%;
+  animation: sparkle 2s ease-in-out infinite;
+  pointer-events: none;
+}
+
+.sparkle-1 { top: 10%; right: 5%; animation-delay: 0s; }
+.sparkle-2 { top: 5%; left: 10%; animation-delay: 0.7s; width: 6px; height: 6px; }
+.sparkle-3 { bottom: 15%; right: 8%; animation-delay: 1.3s; width: 5px; height: 5px; }
+
+/* Confetti particles */
+.download-confetti {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+  overflow: hidden;
+  z-index: 0;
+}
+
+.confetti-piece {
+  position: absolute;
+  top: -10px;
+  width: 8px;
+  height: 8px;
+  border-radius: 2px;
+  animation: confettiFall linear forwards;
+  opacity: 0;
+}
+
+.confetti-0  { left: 5%;  background: var(--ge-red);  animation-duration: 3.5s; animation-delay: 0.1s; }
+.confetti-1  { left: 15%; background: var(--ge-gold); animation-duration: 4s;   animation-delay: 0.3s; }
+.confetti-2  { left: 25%; background: var(--ge-green);animation-duration: 3.2s; animation-delay: 0s; }
+.confetti-3  { left: 35%; background: var(--ge-red);  animation-duration: 3.8s; animation-delay: 0.5s; width: 6px; height: 12px; }
+.confetti-4  { left: 45%; background: var(--ge-gold); animation-duration: 4.2s; animation-delay: 0.2s; }
+.confetti-5  { left: 55%; background: var(--ge-wine); animation-duration: 3.6s; animation-delay: 0.4s; }
+.confetti-6  { left: 65%; background: var(--ge-red);  animation-duration: 3.9s; animation-delay: 0.1s; width: 10px; height: 6px; }
+.confetti-7  { left: 75%; background: var(--ge-gold); animation-duration: 3.4s; animation-delay: 0.6s; }
+.confetti-8  { left: 85%; background: var(--ge-green);animation-duration: 4.1s; animation-delay: 0.3s; }
+.confetti-9  { left: 10%; background: var(--ge-wine); animation-duration: 3.7s; animation-delay: 0.7s; width: 6px; height: 10px; }
+.confetti-10 { left: 50%; background: var(--ge-red);  animation-duration: 3.3s; animation-delay: 0.8s; }
+.confetti-11 { left: 90%; background: var(--ge-gold); animation-duration: 4s;   animation-delay: 0.15s; }
 
 .download-thank-you {
   text-align: center;
@@ -28,9 +89,13 @@
   color: var(--ge-text-muted);
   font-size: 14px;
   line-height: 1.6;
+  position: relative;
+  z-index: 1;
 }
 
 .download-btn {
   text-decoration: none;
   text-align: center;
+  position: relative;
+  z-index: 1;
 }

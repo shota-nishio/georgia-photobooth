@@ -1,24 +1,64 @@
 .progress-bar {
-  display: flex;
-  justify-content: center;
-  gap: 8px;
-  padding: 12px 0;
+  position: relative;
+  padding: 14px 32px 10px;
 }
 
-.progress-dot {
-  width: 8px;
-  height: 8px;
-  border-radius: 50%;
+/* Gold track line */
+.progress-track {
+  position: absolute;
+  top: 28px;
+  left: 48px;
+  right: 48px;
+  height: 3px;
   background: var(--ge-border);
-  transition: all var(--ge-transition);
+  border-radius: 2px;
 }
 
-.progress-dot.active {
-  width: 24px;
-  border-radius: 4px;
-  background: var(--ge-red);
+.progress-fill {
+  height: 100%;
+  background: var(--ge-gold-gradient);
+  border-radius: 2px;
+  transition: width 0.5s var(--ge-ease-out-expo);
+  box-shadow: 0 0 6px rgba(201, 169, 78, 0.3);
 }
 
-.progress-dot.done {
+/* Step circles */
+.progress-steps {
+  display: flex;
+  justify-content: space-between;
+  position: relative;
+  z-index: 1;
+}
+
+.progress-step {
+  width: 32px;
+  height: 32px;
+  border-radius: 50%;
+  background: var(--ge-bg);
+  border: 2px solid var(--ge-border);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  transition: all 0.4s var(--ge-ease-out-expo);
+}
+
+.progress-step.active {
+  border-color: var(--ge-red);
+  background: white;
+  box-shadow: 0 0 0 3px rgba(218, 41, 28, 0.15);
+  transform: scale(1.1);
+}
+
+.progress-step.done {
+  border-color: var(--ge-gold);
   background: var(--ge-gold);
+}
+
+.progress-step-icon {
+  font-size: 13px;
+  line-height: 1;
+}
+
+.progress-step.done .progress-step-icon {
+  font-size: 12px;
 }

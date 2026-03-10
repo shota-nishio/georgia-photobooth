@@ -38,10 +38,21 @@ export function DownloadShare({ canvas, onRetake }: Props) {
 
   return (
     <div className="download fade-in">
-      <h2 className="step-title">{t.download.title}</h2>
+      {/* Confetti particles */}
+      <div className="download-confetti" aria-hidden="true">
+        {Array.from({ length: 12 }, (_, i) => (
+          <span key={i} className={`confetti-piece confetti-${i}`} />
+        ))}
+      </div>
+
+      <h2 className="step-title download-title">{t.download.title}</h2>
 
       <div className="download-preview-wrap">
         <canvas ref={previewRef} className="download-preview" />
+        {/* Sparkle decorations */}
+        <div className="sparkle sparkle-1" />
+        <div className="sparkle sparkle-2" />
+        <div className="sparkle sparkle-3" />
       </div>
 
       <div className="download-thank-you">
@@ -57,11 +68,11 @@ export function DownloadShare({ canvas, onRetake }: Props) {
             download={filename}
             className="btn-primary download-btn"
           >
-            📥 {t.download.downloadPhoto}
+            {t.download.downloadPhoto}
           </a>
         )}
         <button className="btn-secondary" onClick={onRetake}>
-          📷 {t.download.takeAnother}
+          {t.download.takeAnother}
         </button>
       </div>
     </div>
