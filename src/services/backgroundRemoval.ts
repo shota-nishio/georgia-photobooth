@@ -18,9 +18,9 @@
 import { pipeline, RawImage, env } from '@huggingface/transformers'
 import { removeBackground, preload, type Config } from '@imgly/background-removal'
 
-// ── White wall detection config (COLOR) ──
-const WALL_LIGHTNESS_MIN = 0.72    // HSL lightness threshold (0-1): above = "bright"
-const WALL_SATURATION_MAX = 0.18   // HSL saturation threshold (0-1): below = "colorless"
+// ── White wall / neutral background detection config (COLOR) ──
+const WALL_LIGHTNESS_MIN = 0.60    // HSL lightness threshold: catches shadows & cream walls
+const WALL_SATURATION_MAX = 0.25   // HSL saturation threshold: catches warm-toned walls
 const WALL_BLUR_RADIUS = 8         // blur the wall mask to smooth edges
 
 // ── Depth estimation config ──
@@ -28,8 +28,8 @@ env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const DEPTH_BLUR_RADIUS = 10
-const SIGMOID_STEEPNESS = 0.10     // gentle transition
-const THRESHOLD_BIAS = 0.85        // lenient: keep more foreground
+const SIGMOID_STEEPNESS = 0.14     // moderate transition (person boost protects people)
+const THRESHOLD_BIAS = 0.78        // slightly aggressive (safe: person boost overrides)
 const VERTICAL_WEIGHT = 0.30       // mild vertical bias
 
 // ── Person mask boost config ──
