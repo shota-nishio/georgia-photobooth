@@ -200,10 +200,13 @@ export async function removeBg(
     const boostedPerson = rawPersonAlpha > PERSON_BOOST_THRESHOLD ? 255 : 0
 
     // Layer 4: Table floor — bottom portion guaranteed opaque
+    // BUT only for non-wall pixels! White wall at bottom should still be removed.
     let tableFloor = 0
     if (verticalPos > TABLE_FLOOR_START) {
       const t = Math.min(1, (verticalPos - TABLE_FLOOR_START) / TABLE_FLOOR_RAMP)
-      tableFloor = Math.round(t * TABLE_FLOOR_STRENGTH)
+      const rawFloor = Math.round(t * TABLE_FLOOR_STRENGTH)
+      // Scale floor by inverse wall strength: wall → no floor protection
+      tableFloor = Math.round(rawFloor * (1 - isWall))
     }
 
     // Final merge: keep pixel if ANY protective layer says keep
