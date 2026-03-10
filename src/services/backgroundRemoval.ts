@@ -13,9 +13,9 @@ env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
 const BLUR_RADIUS = 10
-const SIGMOID_STEEPNESS = 0.15 // controls transition sharpness (higher = sharper)
-const THRESHOLD_BIAS = 0.90 // slight Otsu bias to retain foreground
-const VERTICAL_WEIGHT = 0.35 // vertical position bias: top=stricter, bottom=lenient
+const SIGMOID_STEEPNESS = 0.20 // controls transition sharpness (higher = sharper)
+const THRESHOLD_BIAS = 0.75 // lower Otsu threshold to retain more foreground
+const VERTICAL_WEIGHT = 0.50 // strong vertical bias: top=much stricter, bottom=lenient
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
