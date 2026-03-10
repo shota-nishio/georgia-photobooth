@@ -4,7 +4,6 @@ const config: Config = {
   model: 'isnet',
   device: 'gpu',
   output: {
-    type: 'foreground',
     format: 'image/png',
     quality: 0.8,
   },
