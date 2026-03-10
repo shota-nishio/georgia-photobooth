@@ -49,12 +49,11 @@ const VERTICAL_WEIGHT = 0.30       // mild vertical bias
 const PERSON_BOOST_THRESHOLD = 30  // IS-Net alpha > this → 255 (fully opaque)
 
 // ── Person segmentation config (@imgly) ──
-// Use 'cpu' + quantized model for mobile stability.
-// isnet_quint8 (~42MB) instead of isnet_fp16 (~84MB) — halves memory usage.
-// Used only as binary boost layer (alpha > 30 → 255), so quantization
-// has negligible impact on final output quality.
+// Use 'cpu' + fp16 model. Safe on mobile because depth model is DISPOSED
+// before IS-Net loads → peak memory ~84MB (not 111MB simultaneous).
+// isnet_quint8 causes quality degradation at person/table boundaries.
 const imglyConfig: Config = {
-  model: 'isnet_quint8',
+  model: 'isnet_fp16',
   device: 'cpu',
   output: {
     format: 'image/png',
