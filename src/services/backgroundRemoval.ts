@@ -12,8 +12,8 @@ import { removeBackground, preload, type Config } from '@imgly/background-remova
 env.allowLocalModels = false
 const DEPTH_MODEL_ID = 'onnx-community/depth-anything-v2-small'
 const DEPTH_MODEL_DTYPE = 'q8' as const
-const DEPTH_THRESHOLD_PERCENTILE = 55
-const BLUR_RADIUS = 5
+const BLUR_RADIUS = 10
+const SIGMOID_STEEPNESS = 0.08 // controls transition softness (lower = softer)
 
 // ── Person segmentation config (@imgly) ──
 const imglyConfig: Config = {
@@ -196,7 +196,7 @@ async function runDepthEstimation(
   onProgress?.(40)
 
   const depthData = depth.data as Uint8Array
-  const mask = createDepthMask(depthData, depth.width, depth.height, DEPTH_THRESHOLD_PERCENTILE, BLUR_RADIUS)
+  const mask = createDepthMask(depthData, depth.width, depth.height, BLUR_RADIUS)
 
   return { data: mask, width: depth.width, height: depth.height }
 }
@@ -224,23 +224,69 @@ async function runPersonSegmentation(
 // Utility functions
 // ──────────────────────────────────────────────
 
+/**
+ * Create a soft mask using Otsu's automatic threshold + sigmoid transition.
+ * Instead of a hard binary cutoff, uses a smooth gradient at the boundary.
+ */
 function createDepthMask(
   depthData: Uint8Array,
   width: number,
   height: number,
-  percentile: number,
   blurRadius: number
 ): Uint8Array {
-  const sorted = Array.from(depthData).sort((a, b) => a - b)
-  const cutoffIndex = Math.floor(sorted.length * (percentile / 100))
-  const cutoff = sorted[cutoffIndex]
+  // Find optimal threshold using Otsu's method
+  const threshold = otsuThreshold(depthData)
 
+  // Apply sigmoid soft mask (smooth transition around threshold)
   const mask = new Uint8Array(width * height)
   for (let i = 0; i < depthData.length; i++) {
-    mask[i] = depthData[i] >= cutoff ? 255 : 0
+    const diff = depthData[i] - threshold
+    const sigmoid = 1 / (1 + Math.exp(-diff * SIGMOID_STEEPNESS))
+    mask[i] = Math.round(sigmoid * 255)
   }
 
   return gaussianBlur(mask, width, height, blurRadius)
+}
+
+/**
+ * Otsu's method: find the threshold that minimizes intra-class variance.
+ * Automatically adapts to each image's depth distribution.
+ */
+function otsuThreshold(data: Uint8Array): number {
+  // Build histogram (256 bins)
+  const histogram = new Array(256).fill(0)
+  for (let i = 0; i < data.length; i++) {
+    histogram[data[i]]++
+  }
+
+  const total = data.length
+  let sumAll = 0
+  for (let i = 0; i < 256; i++) sumAll += i * histogram[i]
+
+  let sumBg = 0
+  let weightBg = 0
+  let maxVariance = 0
+  let bestThreshold = 0
+
+  for (let t = 0; t < 256; t++) {
+    weightBg += histogram[t]
+    if (weightBg === 0) continue
+
+    const weightFg = total - weightBg
+    if (weightFg === 0) break
+
+    sumBg += t * histogram[t]
+    const meanBg = sumBg / weightBg
+    const meanFg = (sumAll - sumBg) / weightFg
+
+    const variance = weightBg * weightFg * (meanBg - meanFg) * (meanBg - meanFg)
+    if (variance > maxVariance) {
+      maxVariance = variance
+      bestThreshold = t
+    }
+  }
+
+  return bestThreshold
 }
 
 function gaussianBlur(
